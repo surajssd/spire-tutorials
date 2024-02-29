@@ -1,3 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rqlite-svc-internal
+  namespace: spire
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: True
+  selector:
+    db: rqlite
+  ports:
+    - protocol: TCP
+      port: 4001
+      targetPort: 4001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rqlite-svc
+  namespace: spire
+spec:
+  selector:
+    db: rqlite
+  ports:
+    - protocol: TCP
+      port: 4001
+      targetPort: 4001
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -6,18 +34,22 @@ metadata:
   labels:
     app: spire-server
 spec:
-  replicas: 1
+  replicas: 3
+  podManagementPolicy: "Parallel"
   selector:
     matchLabels:
       app: spire-server
-  serviceName: spire-server
+      db: rqlite # has to match .spec.template.metadata.labels
+  serviceName: rqlite-svc-internal
   template:
     metadata:
       namespace: spire
       labels:
         app: spire-server
+        db: rqlite # has to match .spec.selector.matchLabels
     spec:
       serviceAccountName: spire-server
+      terminationGracePeriodSeconds: 10
       containers:
         - name: spire-server
           image: ghcr.io/spiffe/spire-server:1.5.1
@@ -33,6 +65,8 @@ spec:
             - name: spire-data
               mountPath: /run/spire/data
               readOnly: false
+            - name: rqlite-file
+              mountPath: /rqlite/file
           livenessProbe:
             httpGet:
               path: /live
@@ -47,17 +81,44 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
+        - name: rqlite
+          image: rqlite/rqlite:8.22.1
+          args:
+          - -disco-mode=dns
+          - -disco-config={"name":"rqlite-svc-internal"}
+          - -bootstrap-expect=3
+          - -join-interval=3s
+          - -join-attempts=3000
+          - -raft-cluster-remove-shutdown=true
+          ports:
+          - containerPort: 4001
+            name: rqlite
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /readyz
+              port: 4001
+            periodSeconds: 5
+            timeoutSeconds: 2
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /readyz?noleader
+              port: rqlite
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+          - name: rqlite-file
+            mountPath: /rqlite/file
       volumes:
         - name: spire-config
           configMap:
             name: spire-server
-  volumeClaimTemplates:
-    - metadata:
-        name: spire-data
-        namespace: spire
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 1Gi
+        - name: spire-data
+          emptyDir:
+            medium: Memory
+        - name: rqlite-file
+          emptyDir:
+            medium: Memory

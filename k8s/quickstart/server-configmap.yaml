@@ -26,7 +26,7 @@ data:
       DataStore "sql" {
         plugin_data {
           database_type = "sqlite3"
-          connection_string = "/run/spire/data/datastore.sqlite3"
+          connection_string = "/rqlite/file/data/db.sqlite"
         }
       }
 
